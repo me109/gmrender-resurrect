@@ -37,12 +37,67 @@
 #include <unistd.h>
 #include <inttypes.h>
 
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/vt.h>
+#include <sys/ioctl.h>
+
 #include "logging.h"
 #include "upnp_connmgr.h"
 #include "output_module.h"
 #include "output_gstreamer.h"
 
+#define GMRENDER_VT 3
+#define LABWC_VT    2
+
+static gboolean video_vt_active_ = FALSE;
+
 static double buffer_duration = 0.0; /* Buffer disbled by default, see #182 */
+
+static int switch_vt(int vt)
+{
+        int fd;
+        int ret;
+
+        fd = open("/dev/tty0", O_RDWR | O_CLOEXEC);
+        if (fd < 0) {
+                Log_error("gstreamer",
+                          "Cannot open /dev/tty0: %s\n",
+                          strerror(errno));
+                return -1;
+        }
+
+        ret = ioctl(fd, VT_ACTIVATE, vt);
+        if (ret < 0) {
+                Log_error("gstreamer",
+                          "VT_ACTIVATE(%d) failed: %s\n",
+                          vt, strerror(errno));
+                close(fd);
+                return -1;
+        }
+
+        ret = ioctl(fd, VT_WAITACTIVE, vt);
+        if (ret < 0) {
+                Log_error("gstreamer",
+                          "VT_WAITACTIVE(%d) failed: %s\n",
+                          vt, strerror(errno));
+                close(fd);
+                return -1;
+        }
+
+        close(fd);
+
+        Log_info("gstreamer",
+                 "Switched to VT%d\n",
+                 vt);
+
+        return 0;
+}
+
+static gboolean output_gstreamer_has_video(void)
+{
+        return video_sink != NULL || video_pipe != NULL;
+}
 
 static void scan_mime_list(void)
 {
@@ -143,31 +198,115 @@ static GstState get_current_player_state() {
 	return state;
 }
 
-static int output_gstreamer_play(output_transition_cb_t callback) {
-	play_trans_callback_ = callback;
-	if (get_current_player_state() != GST_STATE_PAUSED) {
-		if (gst_element_set_state(player_, GST_STATE_READY) ==
-		    GST_STATE_CHANGE_FAILURE) {
-			Log_error("gstreamer", "setting play state failed (1)");
-			// Error, but continue; can't get worse :)
-		}
-		g_object_set(G_OBJECT(player_), "uri", gsuri_, NULL);
-	}
-	if (gst_element_set_state(player_, GST_STATE_PLAYING) ==
-	    GST_STATE_CHANGE_FAILURE) {
-		Log_error("gstreamer", "setting play state failed (2)");
-		return -1;
-	}
-	return 0;
+static int output_gstreamer_play(output_transition_cb_t callback)
+{
+        play_trans_callback_ = callback;
+
+        /*
+         * If resuming from PAUSED, the video pipeline already owns KMS.
+         * Do not switch VT again.
+         */
+        if (get_current_player_state() == GST_STATE_PAUSED) {
+                if (gst_element_set_state(player_, GST_STATE_PLAYING) ==
+                    GST_STATE_CHANGE_FAILURE) {
+                        Log_error("gstreamer",
+                                  "setting play state failed (resume)");
+                        return -1;
+                }
+                return 0;
+        }
+
+        /*
+         * For video playback, VT3 must be active BEFORE playbin enters
+         * READY, because kmssink may acquire the DRM device during
+         * NULL -> READY.
+         */
+        if (output_gstreamer_has_video() && !video_vt_active_) {
+                if (switch_vt(GMRENDER_VT) < 0) {
+                        Log_error("gstreamer",
+                                  "Failed to switch to video VT");
+                        return -1;
+                }
+
+                video_vt_active_ = TRUE;
+        }
+
+        if (gst_element_set_state(player_, GST_STATE_READY) ==
+            GST_STATE_CHANGE_FAILURE) {
+                Log_error("gstreamer", "setting play state failed (1)");
+                return -1;
+        }
+
+        g_object_set(G_OBJECT(player_), "uri", gsuri_, NULL);
+
+        if (gst_element_set_state(player_, GST_STATE_PLAYING) ==
+            GST_STATE_CHANGE_FAILURE) {
+                Log_error("gstreamer", "setting play state failed (2)");
+
+                /*
+                 * PLAYING failed. Release the video pipeline and return
+                 * KMS ownership to labwc.
+                 */
+                if (video_vt_active_) {
+                        gst_element_set_state(player_, GST_STATE_NULL);
+                        gst_element_get_state(player_,
+                                              NULL,
+                                              NULL,
+                                              2 * GST_SECOND);
+
+                        switch_vt(LABWC_VT);
+                        video_vt_active_ = FALSE;
+                }
+
+                return -1;
+        }
+
+        return 0;
 }
 
-static int output_gstreamer_stop(void) {
-	if (gst_element_set_state(player_, GST_STATE_READY) ==
-	    GST_STATE_CHANGE_FAILURE) {
-		return -1;
-	} else {
-		return 0;
-	}
+static int output_gstreamer_stop(void)
+{
+        if (video_vt_active_) {
+                /*
+                 * Completely shut down kmssink before giving KMS
+                 * back to labwc.
+                 */
+                if (gst_element_set_state(player_, GST_STATE_NULL) ==
+                    GST_STATE_CHANGE_FAILURE) {
+                        Log_error("gstreamer",
+                                  "Failed to stop video pipeline");
+                        return -1;
+                }
+
+                /*
+                 * Wait until the state transition has completed and
+                 * kmssink had a chance to release its DRM resources.
+                 */
+                gst_element_get_state(player_,
+                                      NULL,
+                                      NULL,
+                                      2 * GST_SECOND);
+
+                if (switch_vt(LABWC_VT) < 0) {
+                        Log_error("gstreamer",
+                                  "Failed to switch back to labwc VT");
+                        return -1;
+                }
+
+                video_vt_active_ = FALSE;
+
+                return 0;
+        }
+
+        /*
+         * Audio-only playback keeps the original READY behavior.
+         */
+        if (gst_element_set_state(player_, GST_STATE_READY) ==
+            GST_STATE_CHANGE_FAILURE) {
+                return -1;
+        }
+
+        return 0;
 }
 
 static int output_gstreamer_pause(void) {
@@ -589,9 +728,22 @@ static int output_gstreamer_init(void)
 		}
 	}
 
-	if (gst_element_set_state(player_, GST_STATE_READY) ==
-	    GST_STATE_CHANGE_FAILURE) {
-		Log_error("gstreamer", "Error: pipeline doesn't become ready.");
+	/*
+	* Do not put a video pipeline into READY here.
+	*
+	* kmssink may open the DRM device during NULL -> READY.
+	* VT3 is not necessarily active yet, so doing this here can
+	* make kmssink acquire/fail KMS before playback starts.
+	*
+	* Keep the player in NULL until output_gstreamer_play() has
+	* switched to the video VT.
+	*/
+	if (!output_gstreamer_has_video()) {
+			if (gst_element_set_state(player_, GST_STATE_READY) ==
+				GST_STATE_CHANGE_FAILURE) {
+					Log_error("gstreamer",
+							"Error: pipeline doesn't become ready.");
+			}
 	}
 
 	g_signal_connect(G_OBJECT(player_), "about-to-finish",
