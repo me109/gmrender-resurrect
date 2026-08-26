@@ -94,10 +94,7 @@ static int switch_vt(int vt)
         return 0;
 }
 
-static gboolean output_gstreamer_has_video(void)
-{
-        return video_sink != NULL || video_pipe != NULL;
-}
+static gboolean output_gstreamer_needs_video_vt(void);
 
 static void scan_mime_list(void)
 {
@@ -221,7 +218,7 @@ static int output_gstreamer_play(output_transition_cb_t callback)
          * READY, because kmssink may acquire the DRM device during
          * NULL -> READY.
          */
-        if (output_gstreamer_has_video() && !video_vt_active_) {
+        if (output_gstreamer_needs_video_vt() && !video_vt_active_) {
                 if (switch_vt(GMRENDER_VT) < 0) {
                         Log_error("gstreamer",
                                   "Failed to switch to video VT");
@@ -254,8 +251,12 @@ static int output_gstreamer_play(output_transition_cb_t callback)
                                               NULL,
                                               2 * GST_SECOND);
 
-                        switch_vt(LABWC_VT);
-                        video_vt_active_ = FALSE;
+                        if (switch_vt(LABWC_VT) < 0) {
+                                Log_error("gstreamer",
+                                          "Failed to switch back to labwc VT (cleanup)");
+                        } else {
+                                video_vt_active_ = FALSE;
+                        }
                 }
 
                 return -1;
@@ -516,6 +517,13 @@ static gchar *video_sink = NULL;
 static gchar *video_pipe = NULL;
 static double initial_db = 0.0;
 
+static gboolean output_gstreamer_needs_video_vt(void)
+{
+        return video_sink != NULL &&
+               strcmp(video_sink, "kmssink") == 0;
+}
+
+
 /* Options specific to output_gstreamer */
 static GOptionEntry option_entries[] = {
         { "gstout-audiosink", 0, 0, G_OPTION_ARG_STRING, &audio_sink,
@@ -738,7 +746,7 @@ static int output_gstreamer_init(void)
 	* Keep the player in NULL until output_gstreamer_play() has
 	* switched to the video VT.
 	*/
-	if (!output_gstreamer_has_video()) {
+	if (!output_gstreamer_needs_video_vt()) {
 			if (gst_element_set_state(player_, GST_STATE_READY) ==
 				GST_STATE_CHANGE_FAILURE) {
 					Log_error("gstreamer",

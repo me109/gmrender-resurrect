@@ -92,7 +92,7 @@ static void Log_internal(int fd, const char *markup_start,
 	struct iovec parts[3];
 	parts[0].iov_len = asprintf((char**) &parts[0].iov_base,
 				    "%s[%s.%06ld | %s]%s ",
-				    markup_start, fmt_buf, now.tv_usec,
+				    markup_start, fmt_buf, (long)now.tv_usec,
 				    category, markup_end_);
 	parts[1].iov_len = vasprintf((char**) &parts[1].iov_base, format, ap);
 	parts[2].iov_base = (void*) "\n";
