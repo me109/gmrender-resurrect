@@ -120,22 +120,23 @@ static int switch_vt(int vt)
 
 static gboolean output_gstreamer_needs_video_vt(void);
 
-static void playback_end_hook(void)
+static void playback_hook(const char *env_name)
 {
         const char *hook;
         pid_t pid;
         int status;
 
-        hook = getenv("GMRENDER_PLAYBACK_END_HOOK");
+        hook = getenv(env_name);
 
         if (hook == NULL || *hook == '\0') {
                 Log_info("gstreamer",
-                         "Playback-end hook is not configured\n");
+                         "%s is not configured\n",
+                         env_name);
                 return;
         }
 
         Log_info("gstreamer",
-                 "Executing playback-end hook: %s\n",
+                 "Executing playback hook: %s\n",
                  hook);
 
         pid = fork();
@@ -151,7 +152,7 @@ static void playback_end_hook(void)
                 execl(hook, hook, (char *)NULL);
 
                 Log_error("gstreamer",
-                          "Failed to execute playback-end hook '%s': %s\n",
+                          "Failed to execute playback hook '%s': %s\n",
                           hook,
                           strerror(errno));
 
@@ -167,13 +168,23 @@ static void playback_end_hook(void)
 
         if (WIFEXITED(status)) {
                 Log_info("gstreamer",
-                         "Playback-end hook exited with status %d\n",
+                         "Playback hook exited with status %d\n",
                          WEXITSTATUS(status));
         } else if (WIFSIGNALED(status)) {
                 Log_error("gstreamer",
-                          "Playback-end hook killed by signal %d\n",
+                          "Playback hook killed by signal %d\n",
                           WTERMSIG(status));
         }
+}
+
+static void playback_start_hook(void)
+{
+        playback_hook("GMRENDER_PLAYBACK_START_HOOK");
+}
+
+static void playback_end_hook(void)
+{
+        playback_hook("GMRENDER_PLAYBACK_END_HOOK");
 }
 
 static void scan_mime_list(void)
@@ -306,6 +317,7 @@ static int output_gstreamer_play(output_transition_cb_t callback)
                 }
 
                 video_vt_active_ = TRUE;
+                playback_start_hook();
         }
 
         if (gst_element_set_state(player_, GST_STATE_READY) ==
