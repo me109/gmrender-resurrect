@@ -41,6 +41,8 @@
 #include <fcntl.h>
 #include <linux/vt.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include "logging.h"
 #include "upnp_connmgr.h"
@@ -117,6 +119,62 @@ static int switch_vt(int vt)
 }
 
 static gboolean output_gstreamer_needs_video_vt(void);
+
+static void playback_end_hook(void)
+{
+        const char *hook;
+        pid_t pid;
+        int status;
+
+        hook = getenv("GMRENDER_PLAYBACK_END_HOOK");
+
+        if (hook == NULL || *hook == '\0') {
+                Log_info("gstreamer",
+                         "Playback-end hook is not configured\n");
+                return;
+        }
+
+        Log_info("gstreamer",
+                 "Executing playback-end hook: %s\n",
+                 hook);
+
+        pid = fork();
+
+        if (pid < 0) {
+                Log_error("gstreamer",
+                          "fork() failed: %s\n",
+                          strerror(errno));
+                return;
+        }
+
+        if (pid == 0) {
+                execl(hook, hook, (char *)NULL);
+
+                Log_error("gstreamer",
+                          "Failed to execute playback-end hook '%s': %s\n",
+                          hook,
+                          strerror(errno));
+
+                _exit(127);
+        }
+
+        if (waitpid(pid, &status, 0) < 0) {
+                Log_error("gstreamer",
+                          "waitpid() failed: %s\n",
+                          strerror(errno));
+                return;
+        }
+
+        if (WIFEXITED(status)) {
+                Log_info("gstreamer",
+                         "Playback-end hook exited with status %d\n",
+                         WEXITSTATUS(status));
+        } else if (WIFSIGNALED(status)) {
+                Log_error("gstreamer",
+                          "Playback-end hook killed by signal %d\n",
+                          WTERMSIG(status));
+        }
+}
 
 static void scan_mime_list(void)
 {
@@ -278,6 +336,7 @@ static int output_gstreamer_play(output_transition_cb_t callback)
                                           "Failed to switch back to labwc VT (cleanup)");
                         } else {
                                 video_vt_active_ = FALSE;
+								playback_end_hook();
                         }
                 }
 
@@ -314,9 +373,10 @@ static int output_gstreamer_stop(void)
                         Log_error("gstreamer",
                                   "Failed to switch back to labwc VT");
                         return -1;
+                } else {
+                                video_vt_active_ = FALSE;
+								playback_end_hook();
                 }
-
-                video_vt_active_ = FALSE;
 
                 return 0;
         }
