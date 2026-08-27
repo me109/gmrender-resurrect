@@ -62,7 +62,7 @@ static int get_vt_from_env(const char *name, int default_vt)
 
         char *end;
         long value = strtol(env, &end, 10);
-		Log_debug("gstreamer",
+		Log_info("gstreamer",
                  "Read %s='%s', value=%ld\n",
                  name, env, value);
 
@@ -75,9 +75,6 @@ static int get_vt_from_env(const char *name, int default_vt)
 
         return (int)value;
 }
-
-gmrender_vt = get_vt_from_env("GMRENDER_VT", 3);
-labwc_vt = get_vt_from_env("LABWC_VT", 2);
 
 static int switch_vt(int vt)
 {
@@ -674,6 +671,9 @@ static void prepare_next_stream(GstElement *obj, gpointer userdata) {
 static int output_gstreamer_init(void)
 {
 	GstBus *bus;
+
+	gmrender_vt = get_vt_from_env("GMRENDER_VT", 3);
+	labwc_vt = get_vt_from_env("LABWC_VT", 2);
 
 	SongMetaData_init(&song_meta_);
 	scan_mime_list();
