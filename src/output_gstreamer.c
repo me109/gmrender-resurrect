@@ -544,8 +544,16 @@ static gboolean output_gstreamer_needs_video_vt(void)
 		Log_info("gstreamer",
                  "video_sink='%s'\n",
                  video_sink);
-        return video_sink != NULL &&
-               strcmp(video_sink, "kmssink") == 0;
+        if (video_sink == NULL) {
+                /*
+                 * No explicit video sink was specified.
+                 * playbin will use its default video sink, which is
+                 * kmssink in our current environment.
+                 */
+                return TRUE;
+        }
+
+        return strcmp(video_sink, "kmssink") == 0;
 }
 
 
