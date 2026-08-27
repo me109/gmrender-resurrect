@@ -47,12 +47,37 @@
 #include "output_module.h"
 #include "output_gstreamer.h"
 
-#define GMRENDER_VT 3
-#define LABWC_VT    2
-
+static int gmrender_vt = 3;
+static int labwc_vt = 2;
 static gboolean video_vt_active_ = FALSE;
 
 static double buffer_duration = 0.0; /* Buffer disbled by default, see #182 */
+
+static int get_vt_from_env(const char *name, int default_vt)
+{
+        const char *env = getenv(name);
+
+        if (env == NULL || *env == '\0')
+                return default_vt;
+
+        char *end;
+        long value = strtol(env, &end, 10);
+		Log_debug("gstreamer",
+                 "Read %s='%s', value=%ld\n",
+                 name, env, value);
+
+        if (*end != '\0' || value < 1 || value > 63) {
+                Log_error("gstreamer",
+                          "Invalid %s='%s', using VT%d\n",
+                          name, env, default_vt);
+                return default_vt;
+        }
+
+        return (int)value;
+}
+
+gmrender_vt = get_vt_from_env("GMRENDER_VT", 3);
+labwc_vt = get_vt_from_env("LABWC_VT", 2);
 
 static int switch_vt(int vt)
 {
@@ -219,7 +244,7 @@ static int output_gstreamer_play(output_transition_cb_t callback)
          * NULL -> READY.
          */
         if (output_gstreamer_needs_video_vt() && !video_vt_active_) {
-                if (switch_vt(GMRENDER_VT) < 0) {
+                if (switch_vt(gmrender_vt) < 0) {
                         Log_error("gstreamer",
                                   "Failed to switch to video VT");
                         return -1;
@@ -251,7 +276,7 @@ static int output_gstreamer_play(output_transition_cb_t callback)
                                               NULL,
                                               2 * GST_SECOND);
 
-                        if (switch_vt(LABWC_VT) < 0) {
+                        if (switch_vt(labwc_vt) < 0) {
                                 Log_error("gstreamer",
                                           "Failed to switch back to labwc VT (cleanup)");
                         } else {
@@ -288,7 +313,7 @@ static int output_gstreamer_stop(void)
                                       NULL,
                                       2 * GST_SECOND);
 
-                if (switch_vt(LABWC_VT) < 0) {
+                if (switch_vt(labwc_vt) < 0) {
                         Log_error("gstreamer",
                                   "Failed to switch back to labwc VT");
                         return -1;
@@ -519,6 +544,9 @@ static double initial_db = 0.0;
 
 static gboolean output_gstreamer_needs_video_vt(void)
 {
+		Log_info("gstreamer",
+                 "video_sink='%s'\n",
+                 video_sink);
         return video_sink != NULL &&
                strcmp(video_sink, "kmssink") == 0;
 }
