@@ -766,6 +766,7 @@ static void inform_play_transition_from_output(enum PlayFeedback fb) {
 	case PLAY_STOPPED:
 		replace_transport_uri_and_meta("", "");
 		replace_current_uri_and_meta("", "");
+		output_stop();
 		change_transport_state(TRANSPORT_STOPPED);
 		break;
 
